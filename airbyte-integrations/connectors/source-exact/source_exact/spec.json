@@ -7,11 +7,11 @@
     "required": ["client_key", "secret", "authorization_code"],
     "additionalProperties": false,
     "properties": {
-      "client_key": {
+      "client_id": {
         "type": "string",
         "description": "Exact API OAuth2 client key"
       },
-      "secret": {
+      "client_secret": {
         "type": "string",
         "description": "Exact API OAuth2 secret"
       },
