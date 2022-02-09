@@ -4,9 +4,13 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "Exact Spec",
     "type": "object",
-    "required": ["client_key", "secret", "authorization_code"],
+    "required": [],
     "additionalProperties": false,
     "properties": {
+      "token_refresh_endpoint": {
+        "type": "string",
+        "description": "OAuth2 token refresh endpoint"
+      },
       "client_id": {
         "type": "string",
         "description": "Exact API OAuth2 client key"
