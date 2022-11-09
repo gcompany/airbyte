@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021 Airbyte, Inc., all rights reserved.
+ * Copyright (c) 2022 Airbyte, Inc., all rights reserved.
  */
 
 package io.airbyte.integrations.destination.snowflake;
@@ -7,7 +7,6 @@ package io.airbyte.integrations.destination.snowflake;
 import com.fasterxml.jackson.databind.JsonNode;
 import io.airbyte.commons.string.Strings;
 import io.airbyte.db.jdbc.JdbcDatabase;
-import io.airbyte.integrations.base.sentry.AirbyteSentry;
 import io.airbyte.integrations.destination.NamingConventionTransformer;
 import io.airbyte.integrations.destination.record_buffer.SerializableBuffer;
 import io.airbyte.integrations.destination.staging.StagingOperations;
@@ -15,7 +14,6 @@ import java.io.IOException;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Stream;
 import org.joda.time.DateTime;
@@ -24,12 +22,12 @@ import org.slf4j.LoggerFactory;
 
 public class SnowflakeInternalStagingSqlOperations extends SnowflakeSqlOperations implements StagingOperations {
 
-  private static final int UPLOAD_RETRY_LIMIT = 3;
+  public static final int UPLOAD_RETRY_LIMIT = 3;
 
   private static final String CREATE_STAGE_QUERY =
       "CREATE STAGE IF NOT EXISTS %s encryption = (type = 'SNOWFLAKE_SSE') copy_options = (on_error='skip_file');";
   private static final String PUT_FILE_QUERY = "PUT file://%s @%s/%s PARALLEL = %d;";
-  private static final String LIST_STAGE_QUERY = "LIST @%s/%s%s;";
+  private static final String LIST_STAGE_QUERY = "LIST @%s/%s/%s;";
   private static final String COPY_QUERY = "COPY INTO %s.%s FROM '@%s/%s' "
       + "file_format = (type = csv compression = auto field_delimiter = ',' skip_header = 0 FIELD_OPTIONALLY_ENCLOSED_BY = '\"')";
   private static final String DROP_STAGE_QUERY = "DROP STAGE IF EXISTS %s;";
@@ -68,27 +66,24 @@ public class SnowflakeInternalStagingSqlOperations extends SnowflakeSqlOperation
                                      final String stageName,
                                      final String stagingPath)
       throws IOException {
-    AirbyteSentry.executeWithTracing("UploadRecordsToStage",
-        () -> {
-          final List<Exception> exceptionsThrown = new ArrayList<>();
-          boolean succeeded = false;
-          while (exceptionsThrown.size() < UPLOAD_RETRY_LIMIT && !succeeded) {
-            try {
-              loadDataIntoStage(database, stageName, stagingPath, recordsData);
-              succeeded = true;
-            } catch (final Exception e) {
-              LOGGER.error("Failed to upload records into stage {}", stagingPath, e);
-              exceptionsThrown.add(e);
-            }
-            if (!succeeded) {
-              LOGGER.info("Retrying to upload records into stage {} ({}/{}})", stagingPath, exceptionsThrown.size(), UPLOAD_RETRY_LIMIT);
-            }
-          }
-          if (!succeeded) {
-            throw new RuntimeException(
-                String.format("Exceptions thrown while uploading records into stage: %s", Strings.join(exceptionsThrown, "\n")));
-          }
-        }, Map.of("stage", stageName, "path", stagingPath));
+    final List<Exception> exceptionsThrown = new ArrayList<>();
+    boolean succeeded = false;
+    while (exceptionsThrown.size() < UPLOAD_RETRY_LIMIT && !succeeded) {
+      try {
+        loadDataIntoStage(database, stageName, stagingPath, recordsData);
+        succeeded = true;
+      } catch (final Exception e) {
+        LOGGER.error("Failed to upload records into stage {}", stagingPath, e);
+        exceptionsThrown.add(e);
+      }
+      if (!succeeded) {
+        LOGGER.info("Retrying to upload records into stage {} ({}/{}})", stagingPath, exceptionsThrown.size(), UPLOAD_RETRY_LIMIT);
+      }
+    }
+    if (!succeeded) {
+      throw new RuntimeException(
+          String.format("Exceptions thrown while uploading records into stage: %s", Strings.join(exceptionsThrown, "\n")));
+    }
     return recordsData.getFilename();
   }
 
@@ -98,7 +93,8 @@ public class SnowflakeInternalStagingSqlOperations extends SnowflakeSqlOperation
     LOGGER.debug("Executing query: {}", query);
     database.execute(query);
     if (!checkStageObjectExists(database, stageName, stagingPath, recordsData.getFilename())) {
-      LOGGER.error(String.format("Failed to upload data into stage, object @%s/%s not found", stagingPath, recordsData.getFilename()));
+      LOGGER.error(String.format("Failed to upload data into stage, object @%s not found",
+          (stagingPath + "/" + recordsData.getFilename()).replaceAll("/+", "/")));
       throw new RuntimeException("Upload failed");
     }
   }
@@ -112,23 +108,21 @@ public class SnowflakeInternalStagingSqlOperations extends SnowflakeSqlOperation
     final String query = getListQuery(stageName, stagingPath, filename);
     LOGGER.debug("Executing query: {}", query);
     final boolean result;
-    try (final Stream<JsonNode> stream = database.query(query)) {
+    try (final Stream<JsonNode> stream = database.unsafeQuery(query)) {
       result = stream.findAny().isPresent();
     }
     return result;
   }
 
   protected String getListQuery(final String stageName, final String stagingPath, final String filename) {
-    return String.format(LIST_STAGE_QUERY, stageName, stagingPath, filename);
+    return String.format(LIST_STAGE_QUERY, stageName, stagingPath, filename).replaceAll("/+", "/");
   }
 
   @Override
   public void createStageIfNotExists(final JdbcDatabase database, final String stageName) throws Exception {
     final String query = getCreateStageQuery(stageName);
     LOGGER.debug("Executing query: {}", query);
-    AirbyteSentry.executeWithTracing("CreateStageIfNotExists",
-        () -> database.execute(query),
-        Map.of("stage", stageName));
+    database.execute(query);
   }
 
   protected String getCreateStageQuery(final String stageName) {
@@ -145,14 +139,7 @@ public class SnowflakeInternalStagingSqlOperations extends SnowflakeSqlOperation
       throws SQLException {
     final String query = getCopyQuery(stageName, stagingPath, stagedFiles, dstTableName, schemaName);
     LOGGER.debug("Executing query: {}", query);
-    AirbyteSentry.executeWithTracing("CopyIntoTableFromStage",
-        () -> database.execute(query),
-        Map.of(
-            "schema", schemaName,
-            "stage", stageName,
-            "path", stagingPath,
-            "files", String.join(",", stagedFiles),
-            "table", dstTableName));
+    database.execute(query);
   }
 
   protected String getCopyQuery(final String stageName,
@@ -167,9 +154,7 @@ public class SnowflakeInternalStagingSqlOperations extends SnowflakeSqlOperation
   public void dropStageIfExists(final JdbcDatabase database, final String stageName) throws Exception {
     final String query = getDropQuery(stageName);
     LOGGER.debug("Executing query: {}", query);
-    AirbyteSentry.executeWithTracing("DropStageIfExists",
-        () -> database.execute(query),
-        Map.of("stage", stageName));
+    database.execute(query);
   }
 
   protected String getDropQuery(final String stageName) {
@@ -180,9 +165,7 @@ public class SnowflakeInternalStagingSqlOperations extends SnowflakeSqlOperation
   public void cleanUpStage(final JdbcDatabase database, final String stageName, final List<String> stagedFiles) throws Exception {
     final String query = getRemoveQuery(stageName);
     LOGGER.debug("Executing query: {}", query);
-    AirbyteSentry.executeWithTracing("CleanStage",
-        () -> database.execute(query),
-        Map.of("stage", stageName));
+    database.execute(query);
   }
 
   protected String getRemoveQuery(final String stageName) {

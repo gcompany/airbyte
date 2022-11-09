@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021 Airbyte, Inc., all rights reserved.
+ * Copyright (c) 2022 Airbyte, Inc., all rights reserved.
  */
 
 package io.airbyte.integrations.destination.bigquery;
@@ -18,7 +18,6 @@ class BigQuerySQLNameTransformerTest {
       "99namespace", "_99namespace",
       "*_namespace", "__namespace",
       "_namespace", "_namespace");
-
 
   private static final Map<String, String> RAW_TO_NORMALIZED_NAMESPACES = Map.of(
       "name-space", "name_space",
